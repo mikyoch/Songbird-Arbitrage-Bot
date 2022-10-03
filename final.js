@@ -14,10 +14,11 @@ let tokens = [];
 let pairs = [];
 
 const provider = new ethers.providers.JsonRpcProvider(process.env.SONGBIRD);
+const signer = new ethers.Wallet(process.env.privateKey, provider);
 const uniswapRouter = new ethers.Contract(
   process.env.routerAddress,
   routerABI,
-  provider
+  signer
 );
 
 const loadPairsFromNetwork = async () => {
@@ -27,8 +28,10 @@ const loadPairsFromNetwork = async () => {
     provider
   );
   const pairLength = Number(await uniswapFactory.allPairsLength());
-  const threshold = BigNumber.from("500000000000000000000");
+  const threshold = BigNumber.from("50000000000000000000");
   console.log("Pair Length:", pairLength);
+
+  let erc20s = [];
   for (let i = 0; i < pairLength; i++) {
     let curPair = {};
     const currentPair = new ethers.Contract(
@@ -60,6 +63,9 @@ const loadPairsFromNetwork = async () => {
     const reserves = await currentPair.getReserves();
     if (!reserves._reserve0.gt(threshold)) continue;
     if (!reserves._reserve1.gt(threshold)) continue;
+    // if (banList.includes(tokenA.address) || banList.includes(tokenB.address)) continue;
+    erc20s.push(tokenA.address);
+    erc20s.push(tokenB.address);
     console.log("<--->", "Pair", i + 1);
     console.log(await tokenA.symbol(), ":", await tokenB.symbol());
     console.log(await tokenA.name(), ":", await tokenB.name());
@@ -69,6 +75,14 @@ const loadPairsFromNetwork = async () => {
     console.log("");
     pairs.push(curPair);
   }
+  // this is for approving tokens
+  // erc20s = [...new Set(erc20s)];
+  // for (let addr of erc20s) {
+  //   const tokenContract = new ethers.Contract(addr, erc20ABI, signer);
+  //   const tx = await tokenContract.approve(process.env.routerAddress, "1000000000000000000000000000000000000");
+  //   await tx.wait();
+  //   console.log(await tokenContract.symbol());
+  // }
   fs.writeFileSync("pair.json", JSON.stringify(pairs));
 };
 
@@ -98,7 +112,7 @@ const findCircle = async (src) => {
   //   console.log(G[u].map(v => addressToSymbol[v]));
   // })
   let vis = [];
-  let path = [];
+  let path = [WSGB];
   const dfs = (u, depth) => {
     if (depth > 6) return;
     if (vis[u]) {
@@ -109,7 +123,7 @@ const findCircle = async (src) => {
     }
     vis[u] = true;
     for (const e of G[u]) {
-      path.push(e.pairIndex);
+      path.push(e.v);
       dfs(e.v, depth + 1);
       path.pop();
     }
@@ -143,46 +157,49 @@ const getReserves = async () => {
 }
 
 const run = async () => {
-  await getReserves();
+  console.log(new Date().toLocaleTimeString('en-US'), "Running...");
+  // await getReserves();
   // 1e18 = 1000000000000000000
-  const investAmount = BigNumber.from("500000000000000000000");
-  let maxEarning = 0;
-  let bestPath = [];
-  let tmpPath = [];
   for (const path of circles) {
-    let currentAddress = WSGB;
-    let balance = investAmount;
-
-    let curPath = [];
-    for (const index of path) {
-      const pair = pairs[index];
-      const revFlag = pair.token0.address == currentAddress;
-      curPath.push(currentAddress);
-      balance = getAmountOut(
-        balance,
-        revFlag ? pair.reserves._reserve1 : pair.reserves._reserve0,
-        revFlag ? pair.reserves._reserve0 : pair.reserves._reserve1,
-      );
-      currentAddress = revFlag ? pair.token1.address : pair.token0.address;
-    }
-    if (balance.gt(maxEarning)) maxEarning = balance, bestPath = curPath.slice(), tmpPath = path.slice();
+    // let rndAmount = Math.round(Math.random() * 10000 + 100) * 10;
+    let rndAmount = Math.round(Math.random() * 300 + 10) * 10;
+    const investAmount = BigNumber.from(rndAmount + "00000000000000000");
+    const desiredAmount = BigNumber.from(rndAmount * 10 + 5 + "0000000000000000");
+    // let outArr = await uniswapRouter.getAmountsOut(investAmount, path);
+    // const outputAmount = outArr.slice().pop();
+    // if (outputAmount.gt(desiredAmount)) {
+      // console.log(path);
+      // for (let val of outArr) console.log(Number(val) / 10 ** 18);
+      try {
+        await uniswapRouter.callStatic.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+          investAmount,
+          desiredAmount,
+          path,
+          signer.address,
+          "99999999999"
+        );
+        console.log("Trying now...");
+        // for (let val of outArr) console.log(Number(val) / 10 ** 18);
+        // console.log(Number(outputAmount.sub(investAmount)) / 10 ** 18);
+        const tx = await uniswapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+          investAmount,
+          desiredAmount,
+          path,
+          signer.address,
+          "99999999999"
+        );
+        await tx.wait();
+        console.log(Number(outArr.pop()) / 10 ** 18);
+      } catch (e) {
+        // console.log("Error!: ", e.message);
+      }
+    // }
   }
-  console.log(Number(maxEarning) / 10 ** 18);
-  console.log(bestPath);
-  for (const index of tmpPath) {
-    const pair = pairs[index];
-    let r0 = pair.reserves._reserve0;
-    let r1 = pair.reserves._reserve1;
-    console.log(Number(r0) / 10 ** 18);
-    console.log(Number(r1) / 10 ** 18);
-  }
-  let realValue = await uniswapRouter.getAmountsOut(investAmount, bestPath);
-  console.log(realValue);
-  // console.log(Number(realValue) / 10 ** 18);
-  // const tx = uniswapRouter.swapExactTokensForTokens(investAmount, 0, bestPath, )
 }
 
 (async() => {
   await init();
-  run();
+  while (true) {
+    await run();
+  }
 })();
